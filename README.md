@@ -26,25 +26,25 @@ Let's go through an example leveraging `go test` flow:
 1. Implement the workload by embedding`e2e.Runnable` or `*e2e.InstrumentedRunnable`. Or you can use existing ones in [e2edb](db/) package. For example implementing Thanos Querier with our desired configuration could look like this:
 
    ```go mdox-exec="sed -n '49,67p' examples/thanos/standalone.go"
+            User:      strconv.Itoa(os.Getuid()),
+        })
+   }
+
    func newThanosSidecar(env e2e.Environment, name string, prom e2e.Linkable) *e2e.InstrumentedRunnable {
    	ports := map[string]int{
-   		"http": 9090,
-   		"grpc": 9091,
+        "http": 9090,
+        "grpc": 9091,
    	}
    	return e2e.NewInstrumentedRunnable(env, name, ports, "http").Init(
-   		e2e.StartOptions{
-   			Image: "quay.io/thanos/thanos:v0.21.1",
-   			Command: e2e.NewCommand("sidecar", e2e.BuildArgs(map[string]string{
-   				"--debug.name":     name,
-   				"--grpc-address":   fmt.Sprintf(":%d", ports["grpc"]),
-   				"--http-address":   fmt.Sprintf(":%d", ports["http"]),
-   				"--prometheus.url": "http://" + prom.InternalEndpoint(e2edb.AccessPortName),
-   				"--log.level":      "info",
-   			})...),
-   			Readiness: e2e.NewHTTPReadinessProbe("http", "/-/ready", 200, 200),
-   			User:      strconv.Itoa(os.Getuid()),
-   		})
-   }
+        e2e.StartOptions{
+            Image: "quay.io/thanos/thanos:v0.21.1",
+            Command: e2e.NewCommand("sidecar", e2e.BuildArgs(map[string]string{
+                "--debug.name":     name,
+                "--grpc-address":   fmt.Sprintf(":%d", ports["grpc"]),
+                "--http-address":   fmt.Sprintf(":%d", ports["http"]),
+                "--prometheus.url": "http://" + prom.InternalEndpoint(e2edb.AccessPortName),
+                "--log.level":      "info",
+            })...),
    ```
 
 2. Implement test. Start by creating environment. Currently `e2e` supports Docker environment only. Use unique name for all your tests. It's recommended to keep it stable so resources are consistently cleaned.
@@ -131,7 +131,7 @@ if err != nil {
 }
 ```
 
-This will start Prometheus with automatic discovery for every new and old instrumented runnables being scraped. It also runs cadvisor that monitors docker itself if `env.DockerEnvironment` is started. Run `OpenUserInterfaceInBrowser()` to open Prometheus UI in browser.
+This will start Prometheus with automatic discovery for every new and old instrumented runnables being scraped. It also runs cadvisor that monitors docker itself if `env.DockerEnvironment` is started and show generic performance metrics per container (e.g `container_memory_rss`). Run `OpenUserInterfaceInBrowser()` to open Prometheus UI in browser.
 
 ```go
 	// Open monitoring page with all metrics.
@@ -140,9 +140,24 @@ This will start Prometheus with automatic discovery for every new and old instru
 	}
 ```
 
-To see how it works in practice run our example code in [standalone.go](examples/thanos/standalone.go) by running `make run-example`. At the end two UI should show in your browser. Thanos one and monitoring one. You can then e.g query docker container metrics using `sum(container_memory_working_set_bytes{name!=""}) by (name)` metric e.g:
+To see how it works in practice run our example code in [standalone.go](examples/thanos/standalone.go) by running `make run-example`. At the end two UI should show in your browser. Thanos one and monitoring one. You can then e.g query docker container metrics using `container_memory_working_set_bytes{id!="/"}` metric e.g:
 
 ![mem metric](monitoring.png)
+
+#### Bonus: Monitoring performance of e2e process itself.
+
+It's common pattern that you want to schedule some containers but also, you might want to run some expensive code inside e2e once integration components are running. In order to learn more about performance of existing process run `e2emonitoring.Start` with extra parameter:
+
+```go
+	mon, err := e2emonitoring.Start(e, e2emonitoring.WithPIDAsContainer(os.Getpid()))
+	if err != nil {
+		return err
+	}
+```
+
+This will put current process in cgroup which allows cadvisor to watch it as it was container.
+
+> NOTE: This step requires manual step. The step is a command that is printed on first invocation of e2e with above command and should tell you what command should be invoked.
 
 ## Credits
 

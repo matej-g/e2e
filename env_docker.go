@@ -41,6 +41,7 @@ type DockerEnvironment struct {
 	started    []Runnable
 
 	verbose bool
+	closers []func()
 	closed  bool
 }
 
@@ -85,6 +86,12 @@ func NewDockerEnvironment(name string, opts ...EnvironmentOption) (*DockerEnviro
 		return nil, errors.Wrapf(err, "create docker network '%s'", name)
 	}
 	return d, nil
+}
+
+func (e *DockerEnvironment) Name() string { return e.networkName }
+
+func (e *DockerEnvironment) AddCloser(f func()) {
+	e.closers = append(e.closers, f)
 }
 
 func (e *DockerEnvironment) Runnable(name string) RunnableBuilder {
@@ -592,6 +599,9 @@ func getTmpDirectory() (string, error) {
 }
 
 func (e *DockerEnvironment) Close() {
+	for _, c := range e.closers {
+		c()
+	}
 	e.close()
 	e.closed = true
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime/pprof"
 	"strconv"
 	"syscall"
 
@@ -15,8 +17,10 @@ import (
 	e2edb "github.com/efficientgo/e2e/db"
 	e2einteractive "github.com/efficientgo/e2e/interactive"
 	e2emonitoring "github.com/efficientgo/e2e/monitoring"
+	"github.com/efficientgo/tools/core/pkg/errcapture"
 	"github.com/efficientgo/tools/core/pkg/merrors"
 	"github.com/oklog/run"
+	"github.com/pkg/errors"
 )
 
 func newThanosQuerier(env e2e.Environment, name string, endpointsAddresses ...string) *e2e.InstrumentedRunnable {
@@ -75,7 +79,7 @@ func deployWithMonitoring(ctx context.Context) error {
 	// Make sure resources (e.g docker containers, network, dir) are cleaned.
 	defer e.Close()
 
-	mon, err := e2emonitoring.Start(e)
+	mon, err := e2emonitoring.Start(e, e2emonitoring.WithPIDAsContainer(os.Getpid()))
 	if err != nil {
 		return err
 	}
@@ -109,16 +113,30 @@ func deployWithMonitoring(ctx context.Context) error {
 
 	// We can now open Thanos query UI in our browser, why not! We can use its host address thanks to Endpoint method.
 	if err := e2einteractive.OpenInBrowser("http://" + t1.Endpoint("http")); err != nil {
-		return err
+		return errors.Wrap(err, "failed to open UI in browser")
 	}
 	// Open monitoring page with all metrics.
 	if err := mon.OpenUserInterfaceInBrowser(); err != nil {
-		return err
+		return errors.Wrap(err, "failed to open monitoring UI in browser")
 	}
+
 	// For interactive mode, wait until user interrupt.
 	fmt.Println("Waiting on user interrupt (e.g Ctrl+C")
 	<-ctx.Done()
 	return nil
+}
+
+func Heap(dir string) (err error) {
+	if err := os.MkdirAll(dir, os.ModePerm); err != nil {
+		return err
+	}
+
+	f, err := os.Create(filepath.Join(dir, "mem.pprof"))
+	if err != nil {
+		return err
+	}
+	defer errcapture.Do(&err, f.Close, "close")
+	return pprof.WriteHeapProfile(f)
 }
 
 // In order to run it, invoke make run-example from repo root or just go run it.
