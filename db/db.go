@@ -7,12 +7,14 @@ package e2edb
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"github.com/efficientgo/e2e"
+	"github.com/pkg/errors"
 )
 
 const (
@@ -48,36 +50,67 @@ func NewMinio(env e2e.Environment, name, bktName string, opts ...Option) e2e.Ins
 		opt(&o)
 	}
 
-	userID := strconv.Itoa(os.Getuid())
+	if err := os.MkdirAll(filepath.Join(env.SharedDir(), "minio"), 0750); err != nil {
+		panic(errors.Wrap(err, "create minio dir"))
+	}
+
+	if err := os.MkdirAll(filepath.Join(env.SharedDir(), "certs"), 0750); err != nil {
+		panic(errors.Wrap(err, "create certs dir"))
+	}
+
+	if err := downloadCerts(path.Join(env.SharedDir(), "certs")); err != nil {
+		panic(err)
+	}
+
+	// userID := strconv.Itoa(os.Getuid())
 	ports := map[string]int{AccessPortName: 8090}
-	envVars := []string{
-		"MINIO_ROOT_USER=" + MinioAccessKey,
-		"MINIO_ROOT_PASSWORD=" + MinioSecretKey,
-		"MINIO_BROWSER=" + "off",
-		"ENABLE_HTTPS=" + "0",
+	envVars := map[string]string{
+		"MINIO_ROOT_USER ":    MinioAccessKey,
+		"MINIO_ROOT_PASSWORD": MinioSecretKey,
+		"MINIO_BROWSER":       "off",
+		"ENABLE_HTTPS":        "0",
 		// https://docs.min.io/docs/minio-kms-quickstart-guide.html
-		"MINIO_KMS_KES_ENDPOINT=" + "https://play.min.io:7373",
-		"MINIO_KMS_KES_KEY_FILE=" + "root.key",
-		"MINIO_KMS_KES_CERT_FILE=" + "root.cert",
-		"MINIO_KMS_KES_KEY_NAME=" + "my-minio-key",
+		"MINIO_KMS_KES_ENDPOINT":  "https://play.min.io:7373",
+		"MINIO_KMS_KES_KEY_FILE":  "/shared/certs/root.key",
+		"MINIO_KMS_KES_CERT_FILE": "/shared/certs/root.cert",
+		"MINIO_KMS_KES_KEY_NAME":  "my-minio-key-test",
 	}
 	f := e2e.NewInstrumentedRunnable(env, name).WithPorts(ports, AccessPortName).Future()
 	return f.Init(
 		e2e.StartOptions{
-			Image: o.image,
+			Image:   o.image,
+			EnvVars: envVars,
 			// Create the required bucket before starting minio.
-			Command: e2e.NewCommandWithoutEntrypoint("sh", "-c", fmt.Sprintf(
-				// Hacky: Create user that matches ID with host ID to be able to remove .minio.sys details on the start.
-				// Proper solution would be to contribute/create our own minio image which is non root.
-				"useradd -G root -u %v me && mkdir -p %s && chown -R me %s &&"+
-					"curl -sSL --tlsv1.2 -O 'https://raw.githubusercontent.com/minio/kes/master/root.key' -O 'https://raw.githubusercontent.com/minio/kes/master/root.cert' && "+
-					"cp root.* /home/me/ && "+
-					"su - me -s /bin/sh -c 'mkdir -p %s && %s minio server --address :%v --quiet %v'",
-				userID, f.InternalDir(), f.InternalDir(), filepath.Join(f.InternalDir(), bktName), strings.Join(envVars, " "), ports[AccessPortName], f.InternalDir()),
-			),
-			Readiness: e2e.NewHTTPReadinessProbe(AccessPortName, "/minio/health/live", 200, 200),
+			Command:   e2e.NewCommand(fmt.Sprintf("server --address :%v --quiet %v", 8090, "/shared/minio")),
+			Readiness: e2e.NewHTTPSReadinessProbe(AccessPortName, "/minio/health/ready", 200, 200),
 		},
 	)
+}
+
+func downloadCerts(certPath string) error {
+	filenames := []string{"root.key", "root.cert"}
+
+	for _, file := range filenames {
+		resp, err := http.Get("https://raw.githubusercontent.com/minio/kes/master/" + file)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		out, err := os.Create(path.Join(certPath, file))
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+
+		// Write the body to file
+		_, err = io.Copy(out, resp.Body)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func NewConsul(env e2e.Environment, name string, opts ...Option) e2e.InstrumentedRunnable {
